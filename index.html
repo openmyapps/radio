@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0088cc">
+<meta name="color-scheme" content="light dark">
+<title>Радио</title>
+<style>
+:root {
+  --bg: #fff;
+  --bg-active: #e3f2fd;
+  --text: #222;
+  --text-secondary: #888;
+  --separator: #e5e5e5;
+}
+@media (prefers-color-scheme:dark) {
+  :root {
+    --bg: #17212b;
+    --bg-active: #242f3d;
+    --text: #e8e8e8;
+    --text-secondary: #6c7883;
+    --separator: #1f2b36;
+  }
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-tap-highlight-color: transparent;
+  overflow-y: auto;
+}
+.stations {
+  list-style: none;
+  padding: 8px 0;
+}
+.station {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  cursor: pointer;
+  transition: background .15s;
+  user-select: none;
+}
+.station:active { background: var(--bg-active); }
+.station + .station { border-top: 1px solid var(--separator); }
+.station-icon { font-size: 26px; line-height: 1; flex-shrink: 0; }
+.station-name {
+  font-size: 17px;
+  font-weight: 500;
+  flex: 1;
+  line-height: 1.3;
+}
+.station-indicator {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  flex-shrink: 0;
+  transition: background .2s, box-shadow .2s;
+}
+.station.active,
+.station.connecting { background: var(--bg-active); }
+.station.active .station-indicator {
+  background: #4caf50;
+  box-shadow: 0 0 6px #4caf50;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.station.connecting .station-indicator {
+  background: #ff9800;
+  box-shadow: 0 0 6px #ff9800;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.station.error .station-indicator { background: #e53935; animation: none; box-shadow: none; }
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .5; transform: scale(.75); }
+}
+</style>
+</head>
+<body>
+<ul class="stations" id="stations"></ul>
+<audio id="audio" preload="none"></audio>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script>
+const STATIONS = [
+  { name: 'Авторадио', icon: '🚗', url: 'https://hls-01-vtv.webcaramba.com/vtv-avtoradio-rp/playlist.m3u8' },
+  { name: 'Европа Плюс', icon: '🌍', url: 'https://air.sammit.tv/europa/aac_hifi.m3u8' },
+  { name: 'Культура', icon: '🏛️', url: 'https://media2.datacenter.by/stream/kultura/stream' },
+  { name: 'Народное Радио', icon: '📻', url: 'https://live.novoeradio.by:444/live/narodnoeradio_aac128/icecast.audio' },
+  { name: 'Новое Радио', icon: '🎵', url: 'https://live.novoeradio.by:444/live/novoeradio_aac128/icecast.audio' },
+  { name: 'Первый национальный', icon: '🎙️', url: 'https://media2.datacenter.by/stream/1kanal/stream' },
+  { name: 'Пилот FM', icon: '✈️', url: 'https://live.pilotfm.com/stream/pilotfm/aac128' },
+  { name: 'Радио Витебск', icon: '🏙️', url: 'https://stream2.datacenter.by/vtvby' },
+  { name: 'Радио Ретро', icon: '📼', url: 'https://air.sammit.tv/retro/retro.m3u8' },
+  { name: 'Радио Сталіца', icon: '🎸', url: 'https://media2.datacenter.by/stream/stalica/stream' },
+  { name: 'Радиус FM', icon: '📡', url: 'https://radio.dc.beltelecom.by/radiusfm/radiusfm.stream/playlist.m3u8' }
+];
+
+const audio = document.getElementById('audio');
+const list = document.getElementById('stations');
+let hls = null, activeIndex = -1, nodes = [], playAttempt = 0;
+
+const isHls = url => url.includes('.m3u8');
+
+function render() {
+  list.innerHTML = STATIONS.map((s, i) =>
+    `<li class="station" data-index="${i}">
+      <span class="station-icon">${s.icon}</span>
+      <span class="station-name">${s.name}</span>
+      <span class="station-indicator"></span>
+    </li>`
+  ).join('');
+  nodes = [...list.children];
+}
+
+function setActive(idx) {
+  nodes.forEach((el, i) => {
+    el.classList.toggle('active', i === idx && idx >= 0);
+    el.classList.remove('error', 'connecting');
+  });
+  activeIndex = idx;
+}
+
+function stop() {
+  if (hls) { hls.destroy(); hls = null; }
+  audio.onerror = null;
+  audio.onended = null;
+  audio.pause();
+  audio.removeAttribute('src');
+  audio.load();
+  setActive(-1);
+}
+
+function play(idx) {
+  const id = ++playAttempt;
+  const station = STATIONS[idx];
+  const el = nodes[idx];
+  el.classList.add('connecting');
+
+  if (isHls(station.url)) {
+    if (typeof Hls === 'undefined' || !Hls.isSupported()) {
+      audio.onerror = null;
+      el.classList.replace('connecting', 'error');
+      return;
+    }
+    if (hls) hls.destroy();
+    audio.onerror = null;
+    hls = new Hls();
+    hls.loadSource(station.url);
+    hls.attachMedia(audio);
+    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      if (id !== playAttempt) return;
+      el.classList.remove('connecting');
+      setActive(idx);
+      audio.play().catch(() => {
+        if (id !== playAttempt) return;
+        setActive(-1); el.classList.add('error');
+      });
+    });
+    hls.on(Hls.Events.ERROR, (_, data) => {
+      if (data.fatal && id === playAttempt) { hls.destroy(); hls = null; setActive(-1); el.classList.add('error'); }
+    });
+  } else {
+    audio.onerror = () => {
+      if (id !== playAttempt) return;
+      setActive(-1); el.classList.add('error');
+    };
+    audio.onended = () => { if (id === playAttempt) { setActive(-1); } };
+    audio.src = station.url;
+    audio.play()
+      .then(() => {
+        if (id !== playAttempt) return;
+        el.classList.remove('connecting'); setActive(idx);
+      })
+      .catch(() => {
+        if (id !== playAttempt) return;
+        setActive(-1); el.classList.add('error');
+      });
+  }
+}
+
+function toggle(idx) {
+  if (idx === activeIndex) { stop(); return; }
+  stop();
+  play(idx);
+}
+
+list.addEventListener('click', e => {
+  const item = e.target.closest('.station');
+  if (!item) return;
+  toggle(+item.dataset.index);
+});
+
+render();
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') stop();
+});
+</script>
+</body>
+</html>
